@@ -1,37 +1,47 @@
+// Simple auto-reply webhook for Telnyx on Vercel
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("POST only");
 
+  // Telnyx posts JSON; in Vercel it should already be parsed,
+  // but handle both string/object to be safe.
+  const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+  const event = body?.data?.event_type;
+
   try {
-    const evt = req.body?.data?.event_type;
+    if (event === "message.received") {
+      const p = body.data.payload;
+      const fromNumber = p?.from?.phone_number;      // who texted you
+      const textIn     = p?.text ?? "";              // their message
 
-    if (evt === "message.received") {
-      const p = req.body.data.payload;
+      // Build send-body; include messaging_profile_id if you add it as an env (optional)
+      const sendBody = {
+        from: process.env.TELNYX_FROM_NUMBER,        // your Telnyx number (E.164, e.g. +1613...)
+        to: fromNumber,
+        text: `Thanks! We got your message: "${textIn}". We'll follow up shortly. —SednaMetrix`
+      };
+      if (process.env.TELNYX_MESSAGING_PROFILE_ID) {
+        sendBody.messaging_profile_id = process.env.TELNYX_MESSAGING_PROFILE_ID;
+      }
 
-      // Log inbound text
-      console.log("Inbound from", p.from?.phone_number, ":", p.text);
-
-      // Auto-reply via Telnyx Messages API
+      // Send SMS via Telnyx Messages API
       const r = await fetch("https://api.telnyx.com/v2/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.TELNYX_API_KEY}`,
+          "Authorization": `Bearer ${process.env.TELNYX_API_KEY}`
         },
-        body: JSON.stringify({
-          from: process.env.TELNYX_FROM_NUMBER,  // your Telnyx number (E.164)
-          to: p.from.phone_number,               // the sender
-          text:
-            "Thanks for texting SednaMetrix! Want to book a quick call? https://cal.com/harbourview-g4ud0n — we’ll follow up shortly.",
-        }),
+        body: JSON.stringify(sendBody)
       });
 
       console.log("Auto-reply status:", r.status);
+      if (!r.ok) console.error("Auto-reply error:", await r.text());
     }
 
-    // Always ACK fast
+    // Always ACK quickly so Telnyx doesn't retry
     return res.status(200).json({ ok: true });
-  } catch (e) {
-    console.error("Webhook error:", e);
+  } catch (err) {
+    console.error("Webhook error:", err);
+    // Still return 200 so Telnyx doesn't hammer you
     return res.status(200).json({ ok: true });
   }
 }
